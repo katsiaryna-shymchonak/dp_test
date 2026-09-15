@@ -13,15 +13,18 @@ def run_forecasting_pipeline(
     outputs_dir = project_root / "outputs"
 
     # Load raw datasets from data/
+    print("Loading raw datasets from data/...")
     sales = pd.read_csv(data_dir / "sales_history.csv")
     stock = pd.read_csv(data_dir / "stock_history.csv")
     items = pd.read_csv(data_dir / "item_master.csv")
     promos = pd.read_csv(data_dir / "promo_calendar.csv")
 
     # Run data preparation pipeline
+    print("Running data preparation pipeline...")
     df_cleaned = clean_data(sales, stock, items, promos)
 
-    # Compute ADI & CV^2 SKU demand classification dynamically
+    # Compute ADI & CV^2 SKU demand segmentation dynamically
+    print("Performing ADI & CV^2 SKU demand segmentation...")
     sku_stats = (
         df_cleaned.groupby("sku")["qty"]
         .agg(
@@ -55,11 +58,13 @@ def run_forecasting_pipeline(
     )
 
     # Route SKUs to modeling engines for full horizon out-of-sample forecast
+    print("Generating portfolio forecasts...")
     forecast_results = generate_portfolio_forecasts(
         df=df_cleaned, sku_segmentation=sku_stats, horizon=horizon
     )
 
     # Secondary experiment: Global LightGBM with Tweedie loss
+    print("Running secondary experiment (LightGBM Tweedie)...")
     lgb_forecasts = lightgbm_tweedie_forecast(
         train_df=df_cleaned,
         target_skus=df_cleaned["sku"].unique(),
@@ -74,7 +79,14 @@ def run_forecasting_pipeline(
         how="left",
     ).drop(columns=["step"])
 
+    # Map horizon steps to target calendar periods (2026-01 ... 2026-03)
+    horizon_date_map = {1: "2026-01", 2: "2026-02", 3: "2026-03"}
+    final_forecasts["period"] = final_forecasts["horizon_step"].map(
+        horizon_date_map
+    )
+
     # Save outputs: internal features stay in data/processed, predictions go to outputs/
+    print("Saving pipeline outputs...")
     processed_dir = data_dir / "processed"
     processed_dir.mkdir(parents=True, exist_ok=True)
     outputs_dir.mkdir(parents=True, exist_ok=True)
@@ -86,6 +98,16 @@ def run_forecasting_pipeline(
     metrics_summary.to_csv(
         outputs_dir / "model_evaluation_metrics.csv", index=False
     )
+
+    # Save business final submission CSV (sku, location, period, forecast_qty)
+    submission_df = final_forecasts[
+        ["sku", "period", "forecast_ensemble"]
+    ].rename(columns={"forecast_ensemble": "forecast_qty"})
+    submission_df["location"] = "MSK"
+    submission_df = submission_df[
+        ["sku", "location", "period", "forecast_qty"]
+    ]
+    submission_df.to_csv(outputs_dir / "final_submission.csv", index=False)
 
     print("\n--- Model Evaluation Metrics (Holdout Backtest) ---")
     print(metrics_summary.to_string(index=False))
