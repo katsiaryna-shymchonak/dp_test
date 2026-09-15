@@ -1,0 +1,7 @@
+model,wape,rmse,mase
+Ensemble (HW/TSB + SNaive),27.03,2501.2,1.53
+Seasonal Naive,28.7,2383.75,1.63
+Baseline WMA,30.19,1874.0,1.59
+Auto-SARIMA,31.82,2674.73,1.7
+Primary Champion,31.82,2675.04,1.7
+LightGBM Tweedie,66.09,3514.99,3.56

@@ -1,0 +1,10 @@
+## Data Quality & Anomaly Handling
+
+| Anomaly / Defect | Detection Method & Count | Action Taken | Rationale |
+| --- | --- | --- | --- |
+| **Duplicate Sales Records** | Key duplication check on `[sku, location, period]` (3 duplicate rows) | Retained first occurrence via `drop_duplicates()` | Eliminates record multiplication during multi-table joins and prevents distorted demand aggregation. |
+| **Negative Sales Quantities** | Boundary validation on `qty < 0` (1 record with `qty = -8`) | Clipped negative quantities to zero using `.clip(lower=0)` | Operational returns distort baseline demand and violate non-negativity model constraints. |
+| **Ghost Stock Entries** | Cross-field filtering on `stock_end_qty == 0` and `days_out_of_stock == 0` (11 records) | Reassigned `days_out_of_stock = 30` for affected periods | Zero period-end inventory without logged out-of-stock days signals an inventory logging system error. |
+| **Full-Month Stockouts (OOS)** | Identified 100% OOS periods (`days_out_of_stock >= 30`, masking 12,987 lost units) | Imputed unconstrained demand using SKU organic non-promo baseline medians | Linear proportional scaling yields zero when actual sales are zero; organic median imputation restores true unconstrained demand. |
+| **Promotional Demand Spikes** | Comparative analysis on `discount_pct > 0` (8 promo periods with +134% to +410% uplift) | Pre-smoothed promotional periods to organic medians for baseline model fitting | Prevents promotional volume surges from corrupting baseline trend and 12-month seasonality estimation. |
+| **Invalid Global IQR Bounds** | Global IQR analysis (lower bound -1552.12 units, 6.82% mislabeled as outliers) | Replaced global IQR trimming with targeted contextual cleaning | Scale variances across portfolio classes render global statistical bounds invalid, misflagging high-velocity A-class SKUs. |
