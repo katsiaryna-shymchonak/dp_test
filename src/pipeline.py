@@ -63,6 +63,17 @@ def run_forecasting_pipeline(
         df=df_cleaned, sku_segmentation=sku_stats, horizon=horizon
     )
 
+    # Log model routing selection
+    print("Model routing selection applied:")
+    routing_summary = (
+        forecast_results[forecast_results["horizon_step"] == 1]["model_primary"]
+        .value_counts()
+        .to_dict()
+    )
+    for model_name, count in routing_summary.items():
+        print(f"  - {model_name}: {count} SKUs")
+    print("  - Final Champion Ensemble (50% Primary + 50% S.Naive) applied to all SKUs.")
+
     # Secondary experiment: Global LightGBM with Tweedie loss
     print("Running secondary experiment (LightGBM Tweedie)...")
     lgb_forecasts = lightgbm_tweedie_forecast(
