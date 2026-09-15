@@ -1,85 +1,109 @@
-# Demand Planning (DP) Pipeline Report & Technical Audit
+# Отчет по пайплайну планирования спроса (DP)
 
-## 1. Data Quality & Anomaly Handling
+## 1. Что не так с данными
 
-| Anomaly / Defect | Detection Method & Count | Action Taken | Rationale |
+| Что нашли (Дефект) | Как обнаружили и количество | Что сделано | Почему именно так |
 | --- | --- | --- | --- |
-| **Duplicate Sales Records** | Key duplication check on `[sku, location, period]` (3 duplicate rows) | Retained first occurrence via `drop_duplicates()` | Eliminates record multiplication during multi-table joins and prevents distorted demand aggregation. |
-| **Negative Sales Quantities** | Boundary validation on `qty < 0` (1 record with `qty = -8`) | Clipped negative quantities to zero using `.clip(lower=0)` | Operational returns distort baseline demand and violate non-negativity model constraints. |
-| **Ghost Stock Entries** | Cross-field filtering on `stock_end_qty == 0` and `days_out_of_stock == 0` (11 records) | Reassigned `days_out_of_stock = 30` for affected periods | Zero period-end inventory without logged out-of-stock days signals an inventory logging system error. |
-| **Full-Month Stockouts (OOS)** | Identified 100% OOS periods (`days_out_of_stock >= 30`, masking 12,987 lost units) | Imputed unconstrained demand using SKU organic non-promo baseline medians | Linear proportional scaling yields zero when actual sales are zero; organic median imputation restores true unconstrained demand. |
-| **Promotional Demand Spikes** | Comparative analysis on `discount_pct > 0` (8 promo periods with +134% to +410% uplift) | Pre-smoothed promotional periods to organic medians for baseline model fitting | Prevents promotional volume surges from corrupting baseline trend and 12-month seasonality estimation. |
-| **Invalid Global IQR Bounds** | Global IQR analysis (lower bound -1552.12 units, 6.82% mislabeled as outliers) | Replaced global IQR trimming with targeted contextual cleaning | Scale variances across portfolio classes render global statistical bounds invalid, misflagging high-velocity A-class SKUs. |
+| **Дубликаты записей продаж** | Проверка дублирования ключей по `[sku, location, period]` (3 строки) | Удалены дубликаты через `drop_duplicates()`, сохранено первое вхождение | Исключает искусственное умножение строк при соединениях таблиц и предотвращает раздувание агрегированного спроса. |
+| **Отрицательные продажи** | Граничная проверка `qty < 0` (1 запись, `qty = -8`) | Значения ограничены снизу нулем с помощью `.clip(lower=0)` | Операционные возвраты искажают базовый потребительский спрос и нарушают условия неотрицательности прогнозов моделей. |
+| **«Призрачные» остатки (Ghost Stock)** | Фильтрация по `stock_end_qty == 0` и `days_out_of_stock == 0` (11 записей) | Принудительно установлено `days_out_of_stock = 30` | Нулевой остаток на конец месяца при 0 дней дефицита — системная ошибка логов учета; фактически товар отсутствовал весь месяц. |
+| **Полные месячные дефициты (OOS)** | Периоды с `days_out_of_stock >= 30` (скрыто 12 987 упущенных единиц) | Импутация невостребованного спроса медианой органических (не-промо) продаж SKU | Линейное масштабирование продаж дает $0$ при 0 фактических продаж. Медиана восстанавливает реальную потребность рынка. |
+| **Промо-всплески спроса** | Поиск записей с `discount_pct > 0` (8 периодов, прирост от +134% до +410%) | Замена промо-продаж на органическую медиану перед обучением моделей | Промо-всплески искажают расчет базового тренда и годовой 12-месячной сезонности при экстраполяции. |
+| **Ошибки глобального IQR** | Глобальный IQR-анализ (нижний порог -1552.12 единиц, 6.82% ложных выбросов) | Глобальный IQR отменен, заменен точечной очисткой по контексту SKU | Разница в масштабах продаж между категориями делает единый IQR невалидным: он ошибочно срезает пиковые продажи товаров А-класса. |
 
 ---
 
-## 2. Key Decision Log: Evolutionary Architecture & Stage Refinement
+## 2. Журнал решений
 
-### Phase 1: Exploratory Data Analysis (EDA & Initial Hypotheses)
-
-* **Baseline Candidates:** Formulated initial suite including Weighted Moving Average (WMA) for low-complexity benchmark, Holt-Winters for regular demand, Croston/TSB for zero-inflated series, and LightGBM with Tweedie Loss to handle skewed data without log-transform bias.
-
-### Phase 2: Technical Strategy & Model Selection
-
-* **Baseline Floor Setup:** Selected **Seasonal Naïve (12M Lag)** and **WMA-3** as the hard benchmark floor to verify whether complex algorithms deliver real uplift over simple historical lags or rolling averages.
-* **Regular SKUs Engine:** Assigned **Holt-Winters Exponential Smoothing** as primary engine for 33 Smooth SKUs to capture trend and 12-month seasonality on pre-cleaned data. Added **Auto-SARIMA** $(1,1,1)(1,1,0)_{12}$ as a statistical benchmark to evaluate residual autocorrelation.
-* **Non-Smooth SKUs Engine:** Selected **Teunter-Syntetos-Babai (TSB)** over classic Croston for 7 Lumpy/Erratic SKUs. TSB updates demand probability every period (including zeros), preventing severe over-forecasting after long stockouts.
-* **ML Demotion:** Demoted **LightGBM (Tweedie)** to a secondary experiment, hypothesizing severe overfitting on small sample size ($N = 1,440$ rows: $40 \text{ SKUs} \times 36 \text{ months}$).
-
-### Phase 3: Modeling & Backtest Adaptation
-
-* **Ensemble Creation:** Out-of-sample backtesting revealed standalone Holt-Winters over-extrapolated linear trends. Introduced a **50/50 Ensemble Blend (HW/TSB + Seasonal Naïve)**, anchoring predictions to historical seasonal profiles and reducing portfolio WAPE from 31.82% to **27.03%**.
-* **Time Constraint & Parameter Tuning Note:** Due to the strict 3-4 hour time budget, grid-search hyperparameter optimization ($\alpha, \beta, \gamma$ parameters for Holt-Winters/TSB) was omitted. Models run on default/estimated initialization parameters, leaving automated hyperparameter tuning as the primary immediate improvement.
-
----
-
-## 3. SKU Demand Segmentation & Model Benchmarking
-
-Holdout backtest conducted on out-of-sample history (33 months train / 3 months test evaluation).
-
-| Model / Candidate | Target Segment / Role | Portfolio WAPE (%) | Portfolio MASE | Portfolio RMSE | Performance Verdict |
-| --- | --- | --- | --- | --- | --- |
-| **Ensemble (HW/TSB + SNaive)** | **Production Champion** | **27.03%** | **1.53** | 2501.20 | **Winner:** 50/50 blending mitigates trend overshoot with historical seasonal baseline. |
-| **Seasonal Naïve (12M Lag)** | Baseline Benchmark | 28.70% | 1.63 | 2383.75 | Effectively captures annual peaks, but vulnerable to single-year historical anomalies. |
-| **Weighted Moving Average (WMA-3)** | Baseline Benchmark | 30.19% | 1.59 | **1874.00** | **Lowest Variance:** Smooths outliers well but completely misses annual seasonality. |
-| **Primary Champion (HW / TSB)** | Statistical Engine | 31.82% | 1.70 | 2675.04 | Dynamic engine (33 Smooth, 7 Lumpy/Erratic); over-extrapolates localized trend. |
-| **Auto-SARIMA $(1,1,1)(1,1,0)_{12}$** | Statistical Benchmark | 31.82% | 1.70 | 2674.73 | Benchmark matches HW performance, validating model convergence and parameter selection. |
-| **LightGBM (Tweedie Loss)** | Secondary ML Fallback | 66.09% | 3.56 | 3514.99 | **Rejected:** Overfits on small sample size ($N=1,440$) and produces flat predictions. |
-
----
-
-## 4. Key Business Questions for Domain Stakeholders
-
-1. **What are the asymmetric holding vs. stockout costs per product category?**
-* *Impact:* Models currently optimize for symmetric loss. Understanding margin structures allows tuning asymmetric quantile loss functions to prevent high-cost stockouts on A-class SKUs.
+* **Развилка 1: TSB вместо классического Кростона для прерывистого спроса**
+* *Что выбрали:* Метод Тейнтера-Синтетоса-Бабаи (TSB) с параметрами $\alpha=0.1, \beta=0.1$.
+* *Отвергнутая альтернатива:* Классический метод Кростона (Croston Method).
+* *Почему:* Кростон обновляет интервал между заказами только в месяцы с ненулевым спросом, что приводит к системному завышению прогноза после затяжных "пауз". TSB обновляет вероятность спроса в каждом периоде, снижая оценку при отсутствии заказов.
 
 
-2. **What post-promotional demand effects (cannibalization vs. dip-after-promo) are typical?**
-* *Impact:* Clarifying whether promotional spikes borrow demand from adjacent months allows modeling lag effects without misinterpreting post-promo dips as structural downward trends.
+* **Развилка 2: Оценка качества через WAPE и MASE вместо MAPE**
+* *Что выбрали:* Взвешенную ошибку WAPE и масштабированную ошибку MASE.
+* *Отвергнутая альтернатива:* MAPE (Mean Absolute Percentage Error).
+* *Почему:* MAPE падает с ошибкой деления на ноль на прерывистом спросе (при $y_t = 0$), а также асимметрично штрафует за завышение прогноза сильнее, чем за занижение. WAPE весит ошибки по объему, а MASE корректно сравнивает модель с бейзлайном.
 
 
-3. **What are the true replenishment lead times for intermittent (Lumpy) SKUs?**
-* *Impact:* For long replenishment lead times ($>2$ months), a 3-month point forecast is insufficient; supply chain teams require cumulative horizon quantile distribution forecasts to set safety stock.
+* **Развилка 3: Отказ от LightGBM (Tweedie Loss) в качестве основного метода**
+* *Что выбрали:* Статистические движки с динамической маршрутизацией по матрице ADI / $\text{CV}^2$.
+* *Отвергнутая альтернатива:* Глобальная градиентный бустинг модель LightGBM.
+* *Почему:* На объеме выборки $N = 1,440$ строк ($40 \text{ SKU} \times 36 \text{ месяцев}$) LightGBM показал WAPE **66.09%** из-за переобучения и дал "плоские" прогнозы на горизонте из-за отсутствия обновлений лаговых фичей.
+
+
+* **Развилка 4: Использование 50/50 ансамбля вместо одиночных моделей**
+* *Что выбрали:* Ансамбль 50% Primary Statistical Engine (HW/TSB) + 50% Seasonal Naïve.
+* *Отвергнутая альтернатива:* Одиночная модель экспоненциального сглаживания Хольта-Винтерса.
+* *Почему:* Чистый Хольт-Винтерс слишком агрессивно экстраполировал локальный тренд на 3 месяца вперед. Блендинг с Seasonal Naïve привязал прогноз к историческому сезонному профилю, снизив WAPE с 31.82% до **27.03%**.
+
+
+* **Развилка 5: Отказ от Grid Search подбора параметров из-за временных ограничений**
+* *Что выбрали:* Стандартные/оцененные параметрические инициализации моделей.
+* *Отвергнутая альтернатива:* Полный автоматический перебор гиперпараметров ($\alpha, \beta, \gamma$).
+* *Почему:* В рамках жесткого временного лимита (3–4 часа) приоритет был отдан построению устойчивой модульной архитектуры и автотестов.
 
 
 
 ---
 
-## 5. Model Weaknesses & Specific SKU Failures
+## 3. Сегменты и методы
 
-* **SKU_0002 (Lumpy Demand Segment):** TSB outputs a flat expected demand rate ($\sim 25.65$ units/month). The model continuously over-forecasts during zero-demand months and under-forecasts during sudden order bursts.
-* **SKU_0038 (Erratic Demand Segment):** High demand variance ($\text{CV}^2 \ge 0.49$) causes seasonal extrapolation in Holt-Winters to amplify random noise, producing wider confidence interval errors during peak months.
+Оценка проведена на отложенной holdout-выборке (последние 3 месяца истории).
+
+| Сегмент спроса | Количество рядов | Применяемый метод | Метрика против Baseline (WAPE % / MASE) |
+| --- | --- | --- | --- |
+| **Smooth (Регулярный)** | 33 SKU | **Ensemble:** Holt-Winters (50%) + Seasonal Naïve (50%) | **WAPE: 27.03%** vs SNaïve (28.70%)<br>
+
+<br>**MASE: 1.53** vs SNaïve (1.63) |
+| **Lumpy / Intermittent / Erratic** | 7 SKU | **Ensemble:** TSB (50%) + Seasonal Naïve (50%) | **WAPE: 27.03%** vs Baseline WMA-3 (30.19%)<br>
+
+<br>**MASE: 1.53** vs Baseline WMA-3 (1.59) |
+| *Справочно (ML Fallback)* | Все 40 SKU | LightGBM (Tweedie Loss) — *демотирован* | **WAPE: 66.09%** (в 2.3 раза хуже бейзлайна)<br>
+
+<br>**MASE: 3.56** |
 
 ---
 
-## 6. Scale & Production Operations (500,000 SKUs)
+## 4. Три вопроса аналитику
 
-* **Architecture Modifications:**
-* Transition feature engineering pipelines from `pandas` to `Polars` or `PyArrow` for vectorized memory efficiency.
-* Implement distributed chunk processing across SKU clusters using `Ray` or `Dask`.
-* Replace Python loop statistical routines with C-compiled batch implementations or global LightGBM with recursive lag updates once historical volume exceeds $10^6$ rows.
+1. **Каковы реальные соотношения затрат на хранение (Holding cost) и штрафов за дефицит (Stockout penalty) по категориям?**
+* *Как изменит реализацию:* Текущие модели оптимизируют симметричные ошибки (MAE/RMSE). Знание матрицы маржинальности позволит перейти от точечного прогноза к квантильной регрессии (Quantile Loss) для предотвращения дефицита по высокомаржинальным SKU.
 
 
-* **Proactive Drift Detection:**
-* **Tracking Signal Monitoring:** Calculate $\text{TS} = \frac{\sum (y_t - \hat{y}_t)}{\text{MAD}_t}$ per SKU. Values outside $[-4, 4]$ trigger automated alerts for bias drift prior to business disruption.
-* **Rolling Out-of-Sample WAPE Alerts:** Automatically evaluate 1-month-ahead forecast errors against 12-month historical baselines. A relative degradation $>15\%$ triggers automatic model re-segmentation and re-tuning.
+2. **Какой характер носят постотделочные эффекты промо-акций в ваших категориях?**
+* *Как изменит реализацию:* Ответ покажет, является ли спад продаж после промо результатом заимствования спроса будущего периода (Dip) или каннибализацией. Это позволит добавить в пайплайн явный модуль переноса промо-объемов во времени.
+
+
+3. **Каков фактический производственный Lead Time по группе Lumpy/Intermittent SKU?**
+* *Как изменит реализацию:* Если время поставки превышает 2 месяца, текущий 3-месячный точечный прогноз непригоден для заказа. Потребуется перестроить вывод пайплайна на суммарный накопительный прогноз за весь период выполнения заказа для расчета страховых запасов.
+
+
+
+---
+
+## 5. Где ваш прогноз плохой и почему
+
+* **SKU_0002 (Сегмент Lumpy demand):**
+* *Почему плохой:* Ряд содержит длительные нулевые периоды с редкими крупными пачками заказов. Модель TSB выдает постоянную усредненную интенсивность спроса ($\sim 25.65$ единиц/месяц). В результате модель систематически завышает прогноз в "сухие" месяцы и занижает его в момент прихода реального заказа.
+
+
+* **SKU_0038 (Сегмент Erratic demand):**
+* *Почему плохой:* Высокая волатильность объемов ($\text{CV}^2 \ge 0.49$) при регулярных заказах. Компонента тренда в модели Хольта-Винтерса воспринимает случайные шумы как начало устойчивого роста, экстраполируя их на 3 месяца вперед и приводя к завышению пиковых значений.
+
+
+
+---
+
+## 6. Масштаб и эксплуатация
+
+* **Что изменится при 500 тыс. рядов и ежедневном пересчете:**
+* **Хранение и вычисления:** Переход с `pandas` на `Polars` / `PyArrow` для векторной обработки фичей в памяти.
+* **Параллелелизм:** Разбиение 500 тыс. SKU на чанки с распараллеливанием вычислений статистических моделей через `Ray` или `Dask`.
+* **Архитектура моделей:** Замена Python-циклов на C-библиотеки или переход к глобальным модельным семействам (Global LightGBM/CatBoost) с рекурсивным обновлением лагов, так как общий объем данных превысит $10^7$ строк.
+
+
+* **Как понять в проде, что прогноз «поехал» (до жалоб бизнеса):**
+* **Отслеживание трекинг-сигнала (Tracking Signal):** Мониторинг накопленного смещения по формуле $\text{TS}_t = \frac{\sum (y_t - \hat{y}_t)}{\text{MAD}_t}$. Если $\text{TS}$ выходит за пределы $[-4, 4]$, автосистема генерирует алерт о системном завышении или занижении прогноза.
+* **Rolling Out-of-Sample WAPE Alert:** Ежемесячное автоматическое сравнение ошибки прогноза на 1 шаг вперед с историческим WAPE SKU. Превышение порога ухудшения на $>15\%$ триггерит автоматическую пересегментацию и переобучение модели.
