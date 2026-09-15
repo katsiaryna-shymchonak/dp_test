@@ -225,7 +225,6 @@ def generate_portfolio_forecasts(
             benchmark_fc = primary_fc
             model_used = "TSB"
 
-        # Ensemble: 50% primary champion + 50% seasonal naive
         ensemble_fc = np.maximum(0.0, 0.5 * primary_fc + 0.5 * s_naive)
 
         for h in range(horizon):

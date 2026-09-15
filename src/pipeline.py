@@ -117,14 +117,11 @@ def run_forecasting_pipeline(
         outputs_dir / "model_evaluation_metrics.csv", index=False
     )
 
-    # Save business final submission CSV (sku, location, period, forecast_qty)
+    # Save business final submission CSV (sku, period, forecast_qty)
     submission_df = final_forecasts[
         ["sku", "period", "forecast_ensemble"]
     ].rename(columns={"forecast_ensemble": "forecast_qty"})
-    submission_df["location"] = "MSK"
-    submission_df = submission_df[
-        ["sku", "location", "period", "forecast_qty"]
-    ]
+    submission_df = submission_df[["sku", "period", "forecast_qty"]]
     submission_df.to_csv(outputs_dir / "final_submission.csv", index=False)
 
     print("\n--- Model Evaluation Metrics (Holdout Backtest) ---")
