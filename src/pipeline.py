@@ -1,4 +1,11 @@
+import sys
 from pathlib import Path
+
+# Fix module resolution when running directly as a script
+project_root = Path(__file__).resolve().parent.parent
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
+
 import pandas as pd
 from src.data_prep import clean_data
 from src.evaluation import evaluate_holdout_performance
@@ -127,7 +134,6 @@ def run_forecasting_pipeline(
 
 
 if __name__ == "__main__":
-    project_root = Path(__file__).resolve().parent.parent
     forecasts = run_forecasting_pipeline(project_root, horizon=3)
     print("\nForecasting pipeline executed successfully.")
     print(f"Results saved to: {project_root / 'outputs'}")

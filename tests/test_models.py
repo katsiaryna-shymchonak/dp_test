@@ -57,7 +57,7 @@ def test_holt_winters_smooth_demand(synthetic_time_series):
 
 
 def test_generate_portfolio_forecasts_ensemble_blending():
-    """Mathematical test for exact 50/50 ensemble blending (HW/TSB + SNaive)."""
+    """Mathematical tests for exact 50/50 ensemble blending (HW/TSB + SNaive)."""
     # Create 36 months of identical data for predictability
     dates = pd.date_range("2021-01-01", periods=36, freq="MS").strftime("%Y-%m").tolist()
     df = pd.DataFrame({

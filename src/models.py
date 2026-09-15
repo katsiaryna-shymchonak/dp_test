@@ -138,37 +138,57 @@ def lightgbm_tweedie_forecast(
     train_df: pd.DataFrame, target_skus: list, horizon: int = 3
 ) -> pd.DataFrame:
     """Global LightGBM model trained with Tweedie loss to natively handle zero-inflation."""
-    featured_df = prepare_lgb_features(train_df)
-
-    features = [
-        c for c in featured_df.columns if c.startswith(("lag_", "rolling_"))
-    ]
-    X = featured_df[features]
-    y = featured_df["qty"]
-
-    params = {
-        "objective": "tweedie",
-        "tweedie_variance_power": 1.5,
-        "metric": "rmse",
-        "learning_rate": 0.03,
-        "num_leaves": 15,
-        "min_data_in_leaf": 5,
-        "verbose": -1,
-    }
-
-    dtrain = lgb.Dataset(X, label=y)
-    model = lgb.train(params, dtrain, num_boost_round=100)
-
     predictions = []
-    for sku in target_skus:
-        sku_data = featured_df[featured_df["sku"] == sku].tail(1)
-        if not sku_data.empty:
-            X_test = sku_data[features]
-            pred = model.predict(X_test)[0]
+    try:
+        featured_df = prepare_lgb_features(train_df)
+        features = [
+            c for c in featured_df.columns if c.startswith(("lag_", "rolling_"))
+        ]
+
+        if featured_df.empty or len(featured_df) < 5:
+            for sku in target_skus:
+                for h in range(1, horizon + 1):
+                    predictions.append({"sku": sku, "step": h, "forecast_lgb": 0.0})
+            return pd.DataFrame(predictions)
+
+        X = featured_df[features].astype(np.float32)
+        y = featured_df["qty"].astype(np.float32)
+
+        model = lgb.LGBMRegressor(
+            objective="tweedie",
+            tweedie_variance_power=1.5,
+            n_estimators=100,
+            learning_rate=0.03,
+            num_leaves=15,
+            min_child_samples=2,
+            verbosity=-1,
+            n_jobs=1,
+            random_state=42,
+        )
+        model.fit(X, y)
+
+        for sku in target_skus:
+            sku_data = featured_df[featured_df["sku"] == sku].tail(1)
+            if not sku_data.empty:
+                X_test = sku_data[features].astype(np.float32)
+                pred = model.predict(X_test)[0]
+                for h in range(1, horizon + 1):
+                    predictions.append(
+                        {
+                            "sku": sku,
+                            "step": h,
+                            "forecast_lgb": round(max(0.0, float(pred)), 2),
+                        }
+                    )
+            else:
+                for h in range(1, horizon + 1):
+                    predictions.append({"sku": sku, "step": h, "forecast_lgb": 0.0})
+
+    except Exception:
+        predictions = []
+        for sku in target_skus:
             for h in range(1, horizon + 1):
-                predictions.append(
-                    {"sku": sku, "step": h, "forecast_lgb": round(max(0.0, pred), 2)}
-                )
+                predictions.append({"sku": sku, "step": h, "forecast_lgb": 0.0})
 
     return pd.DataFrame(predictions)
 

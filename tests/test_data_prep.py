@@ -122,7 +122,7 @@ def test_restore_demand_partial_and_full_oos():
 
 
 def test_clean_data_end_to_end(sample_sales_df, sample_stock_df):
-    """End-to-end integration test for clean_data pipeline."""
+    """End-to-end integration tests for clean_data pipeline."""
     items = pd.DataFrame({"sku": ["SKU_1", "SKU_2"]})
     promos = pd.DataFrame(
         {"sku": ["SKU_1"], "period": ["2023-01"], "discount_pct": [25.0]}
